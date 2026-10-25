@@ -306,6 +306,7 @@ func TestArrivalsAndDeparturesForStopHandlerTimeParams(t *testing.T) {
 	}{
 		{"minutesAfter and minutesBefore", url.Values{"minutesAfter": {"60"}, "minutesBefore": {"10"}}},
 		{"absolute time param", url.Values{"time": {fmt.Sprintf("%d", specificTimeMs)}}},
+		{"datetime format param", url.Values{"time": {"2025-06-13_08-00-00"}}},
 	}
 
 	for _, tt := range tests {
@@ -317,6 +318,37 @@ func TestArrivalsAndDeparturesForStopHandlerTimeParams(t *testing.T) {
 			assert.Equal(t, arrivalsTestStopID, model.Data.Entry.StopID)
 			assert.ElementsMatch(t, []models.AgencyReference{testdata.Raba}, model.Data.References.Agencies)
 		})
+	}
+}
+
+// time accepts yyyy-MM-dd_HH-mm-ss in the agency timezone, like Java. The
+// arrivals must cluster around the requested hour, proving the value was read
+// as a datetime rather than ignored in favor of the clock.
+func TestArrivalsAndDeparturesForStopAcceptsDateTimeFormat(t *testing.T) {
+	api, cleanup := createTestApiWithRealTimeData(t, clock.NewMockClock(arrivalsTestClock))
+	defer cleanup()
+
+	resp, model := callAPIHandler[ArrivalsAndDeparturesResponse](t, api,
+		arrivalsAndDeparturesURL(arrivalsTestStopID, url.Values{
+			"minutesBefore": {"60"},
+			"minutesAfter":  {"240"},
+			"time":          {"2025-06-13_08-00-00"},
+		}))
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Empty(t, model.Data.FieldErrors)
+
+	arrivals := model.Data.Entry.ArrivalsAndDepartures
+	require.NotEmpty(t, arrivals, "Friday 08:00 must have scheduled service on the fixture")
+
+	loc, err := time.LoadLocation("America/Los_Angeles")
+	require.NoError(t, err)
+	windowStart := time.Date(2025, 6, 13, 7, 0, 0, 0, loc).UnixMilli()
+	windowEnd := time.Date(2025, 6, 13, 12, 0, 0, 0, loc).UnixMilli()
+	for _, a := range arrivals {
+		scheduled := a.ScheduledArrivalTime.UnixMilli()
+		assert.GreaterOrEqual(t, scheduled, windowStart, "arrival scheduled before the requested window")
+		assert.LessOrEqual(t, scheduled, windowEnd, "arrival scheduled after the requested window")
 	}
 }
 

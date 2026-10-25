@@ -13,9 +13,10 @@ import (
 
 // Define params structure for the plural handler
 type ArrivalsStopParams struct {
-	After  time.Duration
-	Before time.Duration
-	Time   time.Time
+	After     time.Duration
+	Before    time.Duration
+	Time      time.Time
+	TimeParam string
 }
 
 // parseArrivalsAndDeparturesParams parses and validates parameters.
@@ -44,9 +45,30 @@ func (api *RestAPI) parseArrivalsAndDeparturesParams(r *http.Request) (ArrivalsS
 
 	params.After = parseMinutesValue(query, "minutesAfter", params.After, maxAfter, addError)
 	params.Before = parseMinutesValue(query, "minutesBefore", params.Before, maxBefore, addError)
-	params.Time = parseEpochMillisValue(query, "time", params.Time, addError)
+
+	params.TimeParam = query.Get("time")
+	if params.TimeParam != "" {
+		if ms, ok := utils.ParseEpochMillis(params.TimeParam); ok {
+			params.Time = time.UnixMilli(ms)
+		} else if _, err := time.ParseInLocation(locationDateTimeLayout, params.TimeParam, time.UTC); err != nil {
+			addError("time", "must be a valid Unix timestamp in milliseconds")
+		}
+	}
 
 	return params, fieldErrors
+}
+
+// resolveStopQueryTime turns the validated time parameter into the query
+// instant in the agency's timezone, matching resolveLocationQueryTime.
+func resolveStopQueryTime(params ArrivalsStopParams, loc *time.Location, now time.Time) time.Time {
+	if params.TimeParam == "" {
+		return now.In(loc)
+	}
+	if ms, ok := utils.ParseEpochMillis(params.TimeParam); ok {
+		return time.UnixMilli(ms).In(loc)
+	}
+	parsed, _ := time.ParseInLocation(locationDateTimeLayout, params.TimeParam, loc)
+	return parsed
 }
 
 func (api *RestAPI) arrivalsAndDeparturesForStopHandler(w http.ResponseWriter, r *http.Request) {
@@ -89,7 +111,7 @@ func (api *RestAPI) arrivalsAndDeparturesForStopHandler(w http.ResponseWriter, r
 		api.serverErrorResponse(w, r, err)
 		return
 	}
-	params.Time = params.Time.In(loc)
+	params.Time = resolveStopQueryTime(params, loc, api.Clock.Now())
 
 	acc := newArrivalsAccumulator(stopAgencyID)
 	references := models.NewEmptyReferences()
